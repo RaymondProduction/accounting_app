@@ -184,11 +184,22 @@ def save_to_google_sheet(data, image_path: Path):
     # нижче на аркуші є окрема ручна таблиця обліку бюджетів, і Google
     # Sheets інколи вважає її продовженням цієї ж таблиці, тому append
     # дописує рядок далеко внизу замість одразу під формою.
+    #
+    # values().get обрізає з відповіді лише порожні рядки в самому кінці
+    # ВСЬОГО аркуша (по всіх колонках), а не порожні рядки саме в колонці A.
+    # Тому будь-які дані нижче в інших колонках (залишки старих зміщених
+    # рядків, таблиця бюджетів) "розтягують" довжину відповіді. Шукаємо
+    # останній рядок, де колонка A справді непорожня.
     existing = sheets.spreadsheets().values().get(
         spreadsheetId=cfg["spreadsheet_id"],
         range=f"{cfg['sheet_name']}!A:A",
     ).execute()
-    next_row = len(existing.get("values", [])) + 1
+    values = existing.get("values", [])
+    last_row = 0
+    for i, v in enumerate(values, start=1):
+        if v and v[0]:
+            last_row = i
+    next_row = last_row + 1
 
     sheets.spreadsheets().values().update(
         spreadsheetId=cfg["spreadsheet_id"],
