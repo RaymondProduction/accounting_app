@@ -198,6 +198,44 @@ Required files:
 
 A `service-account.json` file is not used because Google Drive uploads are performed on behalf of the authenticated user.
 
+---
+
+## Running as a System Service (Linux / Raspberry Pi)
+
+To run the app automatically on boot using systemd:
+
+### 1. Edit the service file
+
+Open `accounting-app.service` and replace the placeholders:
+
+- `YOUR_USERNAME` → your Linux username (e.g. `raymond`)
+- `/home/YOUR_USERNAME/path/to/accounting_app` → full path to this project
+
+### 2. Install the service
+
+```bash
+sudo cp accounting-app.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable accounting-app
+sudo systemctl start accounting-app
+```
+
+### 3. Check status and logs
+
+```bash
+sudo systemctl status accounting-app
+journalctl -u accounting-app -f
+```
+
+### Stop / restart
+
+```bash
+sudo systemctl stop accounting-app
+sudo systemctl restart accounting-app
+```
+
+---
+
 ## License
 
 MIT License.

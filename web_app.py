@@ -180,11 +180,20 @@ def save_to_google_sheet(data, image_path: Path):
         data.get("budget") or "",
     ]
 
-    sheets.spreadsheets().values().append(
+    # Не покладаємось на автоевристику append() для визначення "таблиці" —
+    # нижче на аркуші є окрема ручна таблиця обліку бюджетів, і Google
+    # Sheets інколи вважає її продовженням цієї ж таблиці, тому append
+    # дописує рядок далеко внизу замість одразу під формою.
+    existing = sheets.spreadsheets().values().get(
         spreadsheetId=cfg["spreadsheet_id"],
-        range=f"{cfg['sheet_name']}!A:G",
+        range=f"{cfg['sheet_name']}!A:A",
+    ).execute()
+    next_row = len(existing.get("values", [])) + 1
+
+    sheets.spreadsheets().values().update(
+        spreadsheetId=cfg["spreadsheet_id"],
+        range=f"{cfg['sheet_name']}!A{next_row}:G{next_row}",
         valueInputOption="USER_ENTERED",
-        insertDataOption="INSERT_ROWS",
         body={"values": [row]},
     ).execute()
 
