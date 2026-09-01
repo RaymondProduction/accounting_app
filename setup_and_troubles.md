@@ -414,6 +414,67 @@ def uploaded_file(filename):
 
 ---
 
+# Problem 11: New Row Added Outside the Formatted Table
+
+Symptom:
+
+The expense sheet contains a native Google Sheets table (Insert -> Tables)
+with a fixed range. Rows written by the app landed *below* that range:
+no banding, not covered by the table filter/sort, visually detached.
+
+Cause:
+
+The code wrote values with `spreadsheets.values.update()` into the first
+free row after the last non-empty cell in column A. That row is outside
+the table's defined `range`, so Sheets treats it as a plain cell, not a
+table row. Unlike typing in the UI, a raw values write does not expand a
+table's range.
+
+Solution:
+
+Write *into* the table instead:
+
+1. Read book metadata and locate the table:
+
+```python
+meta = sheets.spreadsheets().get(
+    spreadsheetId=cfg["spreadsheet_id"],
+    fields="sheets(properties(title),tables(tableId,name,range))",
+).execute()
+```
+
+2. Find the first empty row inside the table body (scan column A from the
+   row after the header to `range.endRowIndex`) and write there. The new
+   row inherits the table formatting automatically.
+
+3. If the table is completely full, grow its range by one row first, then
+   write to the new last row:
+
+```python
+sheets.spreadsheets().batchUpdate(
+    spreadsheetId=cfg["spreadsheet_id"],
+    body={"requests": [{
+        "updateTable": {
+            "table": {"tableId": table_id, "range": new_range},  # endRowIndex + 1
+            "fields": "range",
+        }
+    }]},
+).execute()
+```
+
+Notes:
+
+* `AppendCellsRequest` with `tableId` also appends into a table and grows
+  it, but it takes typed `CellData` and loses `valueInputOption`
+  ("USER_ENTERED") parsing of dates/numbers, so the two-step approach
+  above was used instead.
+* If the sheet has more than one table, the code picks the first. Set
+  `"table_name"` in `config.json` to target a specific one by name.
+* The write range is derived from the table's real `startColumnIndex`,
+  not a hard-coded `A:G`.
+
+---
+
 # Final Authentication Files
 
 The application currently uses:

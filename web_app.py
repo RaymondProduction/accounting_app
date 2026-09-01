@@ -157,6 +157,39 @@ def upload_receipt_to_drive(cfg, drive, image_path: Path):
     return uploaded["webViewLink"]
 
 
+def _col_letter(index):
+    """0-based індекс колонки -> літера (0 -> A, 26 -> AA)."""
+    letters = ""
+    index += 1
+    while index:
+        index, rem = divmod(index - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
+
+
+def _find_table(sheets, cfg):
+    """Повертає опис нативної таблиці на потрібному аркуші або None.
+
+    Якщо в config є "table_name" — шукаємо саме її, інакше беремо першу
+    таблицю аркуша.
+    """
+    meta = sheets.spreadsheets().get(
+        spreadsheetId=cfg["spreadsheet_id"],
+        fields="sheets(properties(title),tables(tableId,name,range))",
+    ).execute()
+
+    for s in meta.get("sheets", []):
+        if s["properties"]["title"] != cfg["sheet_name"]:
+            continue
+        tables = s.get("tables", [])
+        if not tables:
+            return None
+        wanted = cfg.get("table_name")
+        return next((t for t in tables if t.get("name") == wanted), tables[0])
+
+    raise RuntimeError(f"Аркуш '{cfg['sheet_name']}' не знайдено у книзі")
+
+
 def save_to_google_sheet(data, image_path: Path):
     cfg = load_config()
 
@@ -180,30 +213,75 @@ def save_to_google_sheet(data, image_path: Path):
         data.get("budget") or "",
     ]
 
-    # Не покладаємось на автоевристику append() для визначення "таблиці" —
-    # нижче на аркуші є окрема ручна таблиця обліку бюджетів, і Google
-    # Sheets інколи вважає її продовженням цієї ж таблиці, тому append
-    # дописує рядок далеко внизу замість одразу під формою.
+    # На аркуші є нативна таблиця Google Sheets (Вставка -> Таблиці) з
+    # фіксованим діапазоном. Якщо просто записати значення у перший
+    # вільний рядок під нею через values().update(), клітинка опиняється
+    # ЗА межами таблиці: без форматування, поза фільтром/сортуванням.
     #
-    # values().get обрізає з відповіді лише порожні рядки в самому кінці
-    # ВСЬОГО аркуша (по всіх колонках), а не порожні рядки саме в колонці A.
-    # Тому будь-які дані нижче в інших колонках (залишки старих зміщених
-    # рядків, таблиця бюджетів) "розтягують" довжину відповіді. Шукаємо
-    # останній рядок, де колонка A справді непорожня.
-    existing = sheets.spreadsheets().values().get(
-        spreadsheetId=cfg["spreadsheet_id"],
-        range=f"{cfg['sheet_name']}!A:A",
-    ).execute()
-    values = existing.get("values", [])
-    last_row = 0
-    for i, v in enumerate(values, start=1):
-        if v and v[0]:
-            last_row = i
-    next_row = last_row + 1
+    # Тому:
+    #   1. Знаходимо перший порожній рядок у ТІЛІ таблиці й пишемо в нього
+    #      (форматування він успадкує від таблиці автоматично).
+    #   2. Якщо таблиця заповнена вщент — спершу розширюємо її діапазон на
+    #      один рядок через updateTable, потім пишемо в новий останній рядок.
+    #
+    # Якщо таблиці на аркуші немає — стара логіка: перший рядок після
+    # останнього непорожнього в колонці A.
+    table = _find_table(sheets, cfg)
+
+    if table is None:
+        existing = sheets.spreadsheets().values().get(
+            spreadsheetId=cfg["spreadsheet_id"],
+            range=f"{cfg['sheet_name']}!A:A",
+        ).execute()
+        values = existing.get("values", [])
+        last_row = 0
+        for i, v in enumerate(values, start=1):
+            if v and v[0]:
+                last_row = i
+        next_row = last_row + 1
+        start_col = 0
+    else:
+        rng = table["range"]
+        r0 = rng.get("startRowIndex", 0)      # 0-based, рядок заголовка
+        r1 = rng["endRowIndex"]               # 0-based, ексклюзивно
+        start_col = rng.get("startColumnIndex", 0)
+        col_a = _col_letter(start_col)
+
+        first_body = r0 + 2                   # 1-based, перший рядок тіла
+        last_body = r1                        # 1-based, останній рядок тіла
+
+        col_values = sheets.spreadsheets().values().get(
+            spreadsheetId=cfg["spreadsheet_id"],
+            range=f"{cfg['sheet_name']}!{col_a}{first_body}:{col_a}{last_body}",
+        ).execute().get("values", [])
+
+        next_row = None
+        for j in range(last_body - first_body + 1):
+            cell = col_values[j] if j < len(col_values) else []
+            if not cell or not cell[0]:
+                next_row = first_body + j
+                break
+
+        if next_row is None:
+            next_row = last_body + 1
+            new_range = dict(rng)
+            new_range["endRowIndex"] = r1 + 1
+            sheets.spreadsheets().batchUpdate(
+                spreadsheetId=cfg["spreadsheet_id"],
+                body={"requests": [{
+                    "updateTable": {
+                        "table": {"tableId": table["tableId"], "range": new_range},
+                        "fields": "range",
+                    }
+                }]},
+            ).execute()
+
+    start_letter = _col_letter(start_col)
+    end_letter = _col_letter(start_col + len(row) - 1)
 
     sheets.spreadsheets().values().update(
         spreadsheetId=cfg["spreadsheet_id"],
-        range=f"{cfg['sheet_name']}!A{next_row}:G{next_row}",
+        range=f"{cfg['sheet_name']}!{start_letter}{next_row}:{end_letter}{next_row}",
         valueInputOption="USER_ENTERED",
         body={"values": [row]},
     ).execute()
