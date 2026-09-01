@@ -168,24 +168,26 @@ def _col_letter(index):
 
 
 def _find_table(sheets, cfg):
-    """Повертає опис нативної таблиці на потрібному аркуші або None.
+    """Повертає (sheet_id, table) для потрібного аркуша; table може бути None.
 
     Якщо в config є "table_name" — шукаємо саме її, інакше беремо першу
     таблицю аркуша.
     """
     meta = sheets.spreadsheets().get(
         spreadsheetId=cfg["spreadsheet_id"],
-        fields="sheets(properties(title),tables(tableId,name,range))",
+        fields="sheets(properties(title,sheetId),tables(tableId,name,range))",
     ).execute()
 
     for s in meta.get("sheets", []):
         if s["properties"]["title"] != cfg["sheet_name"]:
             continue
+        sheet_id = s["properties"]["sheetId"]
         tables = s.get("tables", [])
         if not tables:
-            return None
+            return sheet_id, None
         wanted = cfg.get("table_name")
-        return next((t for t in tables if t.get("name") == wanted), tables[0])
+        table = next((t for t in tables if t.get("name") == wanted), tables[0])
+        return sheet_id, table
 
     raise RuntimeError(f"Аркуш '{cfg['sheet_name']}' не знайдено у книзі")
 
@@ -220,13 +222,18 @@ def save_to_google_sheet(data, image_path: Path):
     #
     # Тому:
     #   1. Знаходимо перший порожній рядок у ТІЛІ таблиці й пишемо в нього
-    #      (форматування він успадкує від таблиці автоматично).
-    #   2. Якщо таблиця заповнена вщент — спершу розширюємо її діапазон на
-    #      один рядок через updateTable, потім пишемо в новий останній рядок.
+    #      (форматування він успадкує від таблиці автоматично). Нічого
+    #      не зсуваємо — цей рядок і так уже всередині таблиці.
+    #   2. Якщо тіло таблиці заповнене вщент — вставляємо новий рядок
+    #      одразу під таблицею через insertDimension. Усе, що лежить
+    #      нижче (напр. ручна таблиця бюджетів), зсувається вниз — так
+    #      само поводиться Google Forms, тому дані під таблицею ніколи
+    #      не перезаписуються. Потім розширюємо діапазон таблиці на цей
+    #      новий порожній рядок через updateTable і пишемо в нього.
     #
     # Якщо таблиці на аркуші немає — стара логіка: перший рядок після
     # останнього непорожнього в колонці A.
-    table = _find_table(sheets, cfg)
+    sheet_id, table = _find_table(sheets, cfg)
 
     if table is None:
         existing = sheets.spreadsheets().values().get(
@@ -268,12 +275,25 @@ def save_to_google_sheet(data, image_path: Path):
             new_range["endRowIndex"] = r1 + 1
             sheets.spreadsheets().batchUpdate(
                 spreadsheetId=cfg["spreadsheet_id"],
-                body={"requests": [{
-                    "updateTable": {
-                        "table": {"tableId": table["tableId"], "range": new_range},
-                        "fields": "range",
-                    }
-                }]},
+                body={"requests": [
+                    {
+                        "insertDimension": {
+                            "range": {
+                                "sheetId": sheet_id,
+                                "dimension": "ROWS",
+                                "startIndex": r1,
+                                "endIndex": r1 + 1,
+                            },
+                            "inheritFromBefore": True,
+                        }
+                    },
+                    {
+                        "updateTable": {
+                            "table": {"tableId": table["tableId"], "range": new_range},
+                            "fields": "range",
+                        }
+                    },
+                ]},
             ).execute()
 
     start_letter = _col_letter(start_col)

@@ -447,18 +447,38 @@ meta = sheets.spreadsheets().get(
    row after the header to `range.endRowIndex`) and write there. The new
    row inherits the table formatting automatically.
 
-3. If the table is completely full, grow its range by one row first, then
-   write to the new last row:
+3. If the table body is completely full, do NOT just widen the table
+   range with `UpdateTableRequest` alone: that overlays the table onto
+   whatever is already filled below it (e.g. a manual budget table) and
+   the following write overwrites those cells.
+
+   Instead insert a real row right below the table first, so everything
+   below shifts down (this is what Google Forms does when appending a
+   response), then extend the table over that new blank row and write to
+   it:
 
 ```python
 sheets.spreadsheets().batchUpdate(
     spreadsheetId=cfg["spreadsheet_id"],
-    body={"requests": [{
-        "updateTable": {
-            "table": {"tableId": table_id, "range": new_range},  # endRowIndex + 1
-            "fields": "range",
-        }
-    }]},
+    body={"requests": [
+        {
+            "insertDimension": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "dimension": "ROWS",
+                    "startIndex": end_row_index,       # row just below the table
+                    "endIndex": end_row_index + 1,
+                },
+                "inheritFromBefore": True,
+            }
+        },
+        {
+            "updateTable": {
+                "table": {"tableId": table_id, "range": new_range},  # endRowIndex + 1
+                "fields": "range",
+            }
+        },
+    ]},
 ).execute()
 ```
 
